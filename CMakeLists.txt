@@ -9,6 +9,7 @@ ENDIF()
 
 set(BUILD_SHARED_LIBS ON)
 
+find_package(catkin REQUIRED COMPONENTS roscpp visualization_msgs)
 FIND_PACKAGE(Eigen3 REQUIRED)
 FIND_PACKAGE(PkgConfig REQUIRED)
 PKG_CHECK_MODULES(YAMLCPP REQUIRED yaml-cpp)
@@ -19,7 +20,10 @@ ELSE()
   MESSAGE(FATAL_ERROR "Could not find yaml-cpp.")
 ENDIF()
 
+catkin_package()
+
 INCLUDE_DIRECTORIES(include ${EIGEN3_INCLUDE_DIRS})
+include_directories(${catkin_INCLUDE_DIRS})
 
 add_library(jps_lib src/jps_planner/graph_search.cpp
   src/jps_planner/jps_planner.cpp)
@@ -44,6 +48,8 @@ add_executable(test_distance_map_planner_2d test/test_distance_map_planner_2d.cp
 target_link_libraries(test_distance_map_planner_2d jps_lib dmp_lib ${YAMLCPP_LIBRARIES} ${Boost_LIBRARIES})
 add_test(test_distance_map_planner_2d test_distance_map_planner_2d ${CMAKE_SOURCE_DIR}/data/corridor.yaml)
 
+add_executable(plan3d_to_path test/plan3d_to_path.cpp)
+target_link_libraries(plan3d_to_path ${catkin_LIBRARIES} jps_lib ${YAMLCPP_LIBRARIES})
 
 install(FILES "${PROJECT_NAME}Config.cmake" "${PROJECT_NAME}ConfigVersion.cmake"
   DESTINATION "share/${PROJECT_NAME}/cmake")
