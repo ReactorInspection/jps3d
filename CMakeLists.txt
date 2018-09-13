@@ -9,7 +9,7 @@ ENDIF()
 
 set(BUILD_SHARED_LIBS ON)
 
-find_package(catkin REQUIRED COMPONENTS roscpp visualization_msgs)
+find_package(catkin REQUIRED COMPONENTS roscpp nav_msgs geometry_msgs)
 FIND_PACKAGE(Eigen3 REQUIRED)
 FIND_PACKAGE(PkgConfig REQUIRED)
 PKG_CHECK_MODULES(YAMLCPP REQUIRED yaml-cpp)
