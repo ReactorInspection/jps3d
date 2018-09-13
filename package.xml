@@ -44,4 +44,5 @@
   <buildtool_depend>roscpp</buildtool_depend>
   <buildtool_depend>nav_msgs</buildtool_depend>
   <buildtool_depend>geometry_msgs</buildtool_depend>
+  <buildtool_depend>tf</buildtool_depend>
 </package>
