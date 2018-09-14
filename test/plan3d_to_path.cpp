@@ -20,6 +20,10 @@ using namespace JPS;
 void waypointsCallback(const nav_msgs::Path::ConstPtr& msg){
 	ROS_INFO("waypoints received. start and/or goal moved");
 	if (msg->poses.size()>2) ROS_WARN("first 2 waypoints treated as start, goal. have not yet implemented handling additional points");
+	if (msg->poses.size()<2) {
+		ROS_ERROR("must publish at least two waypoints");
+		return;
+	}
 	ps_start = msg->poses[0];
 	ps_goal = msg->poses[1];
 	ps_start.header.frame_id = msg->header.frame_id;
@@ -83,7 +87,6 @@ nav_msgs::Path plan(std::shared_ptr<VoxelMapUtil>  map_util){
    }
 	const Vec3f start(ps_start.pose.position.x,ps_start.pose.position.y,ps_start.pose.position.z);
 	const Vec3f goal(ps_goal.pose.position.x,ps_goal.pose.position.y,ps_goal.pose.position.z);
-
 
   std::unique_ptr<JPSPlanner3D> planner_ptr(new JPSPlanner3D(true)); // Declare a planner
   planner_ptr->setMapUtil(map_util); // Set collision checking function
