@@ -49,7 +49,7 @@ target_link_libraries(test_distance_map_planner_2d jps_lib dmp_lib ${YAMLCPP_LIB
 add_test(test_distance_map_planner_2d test_distance_map_planner_2d ${CMAKE_SOURCE_DIR}/data/corridor.yaml)
 
 add_executable(plan3d_to_path test/plan3d_to_path.cpp)
-target_link_libraries(plan3d_to_path ${catkin_LIBRARIES} jps_lib ${YAMLCPP_LIBRARIES})
+target_link_libraries(plan3d_to_path ${catkin_LIBRARIES} jps_lib dmp_lib ${YAMLCPP_LIBRARIES})
 
 install(FILES "${PROJECT_NAME}Config.cmake" "${PROJECT_NAME}ConfigVersion.cmake"
   DESTINATION "share/${PROJECT_NAME}/cmake")
