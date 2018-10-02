@@ -9,6 +9,7 @@
 #include <ros/ros.h>
 #include <tf/transform_listener.h>
 #include <tf/tf.h>
+#include <visualization_msgs/Marker.h>
 
 
 
@@ -21,7 +22,7 @@ bool replan_flag;
 using namespace JPS;
 
 void waypointsCallback(const nav_msgs::Path::ConstPtr& msg){
-	ROS_INFO("waypoints received. start and/or goal moved");
+	ROS_INFO("waypoints received");
 	if (msg->poses.size()>2) ROS_WARN("first 2 waypoints treated as start, goal. have not yet implemented handling additional points");
 	if (msg->poses.size()<2) {
 		ROS_ERROR("must publish at least two waypoints");
@@ -66,14 +67,15 @@ std::shared_ptr<DMPlanner3D> setUpDMP(std::shared_ptr<VoxelMapUtil>  map_util){
 
 
 
-nav_msgs::Path do_planning(std::shared_ptr<JPSPlanner3D> planner_ptr , std::shared_ptr<DMPlanner3D> dmplanner_ptr){
+std::vector<nav_msgs::Path> do_planning(std::shared_ptr<JPSPlanner3D> planner_ptr , std::shared_ptr<DMPlanner3D> dmplanner_ptr){
   nav_msgs::Path path;
+  std::vector<nav_msgs::Path> paths;
   path.header.frame_id = "yaml";
   path.header.stamp = ros::Time();
   
   if (ps_goal.pose.position.x == ps_start.pose.position.x && ps_goal.pose.position.y == ps_start.pose.position.y && ps_goal.pose.position.z == ps_start.pose.position.z){
 	   ROS_ERROR("start and goal poses are the same. Have you published waypoints?");
-	   return path;
+	   return paths;
    }
    else ROS_INFO("running planner");
 
@@ -107,31 +109,64 @@ nav_msgs::Path do_planning(std::shared_ptr<JPSPlanner3D> planner_ptr , std::shar
 	posestamp.pose.position.z = it.transpose()[2];
 	path.poses.push_back(posestamp);
   }
-  
+  paths.push_back(path);
+
   // Run DMP planner
   dmplanner_ptr->computePath(start, goal, path_jps); // Compute the path given the jps path
   const auto path_dmp = dmplanner_ptr->getPath();
   path.poses.clear();
   for(const auto& it: path_dmp){
-	posestamp.header.frame_id = "yaml";
 	posestamp.header.stamp = ros::Time();
 	posestamp.pose.position.x = it.transpose()[0];
 	posestamp.pose.position.y = it.transpose()[1];
 	posestamp.pose.position.z = it.transpose()[2];
 	path.poses.push_back(posestamp);
-    dmp_path_pub.publish(path);
+  }  	
+  paths.push_back(path);
 
-  }
-  return path;
+  return paths;
   
 }
 
+ros::Publisher marker_pub;
+
+void checkMap(std::shared_ptr<VoxelMapUtil>  map_util){
+	ROS_INFO("checking map");
+	const Vec3i dim = map_util->getDim();
+	const double res = map_util->getRes();
+	visualization_msgs::Marker marker;
+	marker.header.frame_id = "yaml";
+	marker.header.stamp = ros::Time();
+	marker.type = visualization_msgs::Marker::CUBE_LIST;
+	marker.scale.x = res;
+	marker.scale.y = res;
+	marker.scale.z = res;
+	marker.color.a = 1.0;
+	marker.color.r = 0.0;
+	marker.color.g = 1.0;
+	marker.color.b = 0.0;
+	for(int x = 0; x < dim(0); x ++) {
+		for(int y = 0; y < dim(1); y ++) {
+			for(int z = 0; z < dim(2); z ++) {
+			  if(!map_util->isFree(Vec3i(x, y,z))) {
+				Vec3f pt = map_util->intToFloat(Vec3i(x, y,z));
+				geometry_msgs::Point point;
+				point.x = pt(0);
+				point.y = pt(1);
+				point.z = pt(2);
+				marker.points.push_back(point);
+	}}}}
+
+    marker_pub.publish( marker );
+    ROS_INFO("finished checking map");
+}
 int main(int argc, char** argv) {
     ros::init(argc, argv, "plan3d_to_path");
     ros::NodeHandle nh("~");
     path_pub = nh.advertise<nav_msgs::Path>("path", 1);
-    path_pub = nh.advertise<nav_msgs::Path>("dmp_path", 1);
+    dmp_path_pub = nh.advertise<nav_msgs::Path>("dmp_path", 1);
 	ros::Subscriber sub = nh.subscribe("/waypoints", 1000, waypointsCallback);
+    marker_pub = nh.advertise<visualization_msgs::Marker>("map_check", 1);
 
 	if(argc != 2) {
 		printf(ANSI_COLOR_RED "Input yaml required!\n" ANSI_COLOR_RESET);
@@ -139,17 +174,26 @@ int main(int argc, char** argv) {
 	}
 	
 	std::shared_ptr<VoxelMapUtil> map_util = readMap(argv[1]);
+	//~ std::vector<int8_t> cmap_ = map_util->getMap();
+	//~ std::cout << "test" << cmap_[0] <<std::endl;
 	std::shared_ptr<JPSPlanner3D> planner_ptr = setUpJPS(map_util);
 	std::shared_ptr<DMPlanner3D> dmplanner_ptr = setUpDMP(map_util);
-	nav_msgs::Path path;
-	replan_flag = true;
+	std::vector<nav_msgs::Path> paths;
+	replan_flag = false;
+	checkMap(map_util);
 	while (ros::ok()){
 		  ros::spinOnce();
 		  if (replan_flag){
-			path = do_planning(planner_ptr, dmplanner_ptr);
+			map_util = readMap(argv[1]);
+			dmplanner_ptr = setUpDMP(map_util);
+
+			paths = do_planning(planner_ptr, dmplanner_ptr);
 			replan_flag = false;
 		  }
-		  path_pub.publish(path);
+		  if (paths.size()>0){
+			  path_pub.publish(paths[0]);
+			  dmp_path_pub.publish(paths[1]);
+		  }
 		  ros::Duration(1).sleep();
 	}
     return 0;
