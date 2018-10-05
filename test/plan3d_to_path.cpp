@@ -49,17 +49,17 @@ std::shared_ptr<VoxelMapUtil> readMap(char* map){
   return map_util;
 }
 
-std::shared_ptr<JPSPlanner3D> setUpJPS(std::shared_ptr<VoxelMapUtil>  map_util){
+std::shared_ptr<JPSPlanner3D> setUpJPS(const std::shared_ptr<VoxelMapUtil> &map_util){
   std::shared_ptr<JPSPlanner3D> planner_ptr(new JPSPlanner3D(true)); // Declare a planner
   planner_ptr->setMapUtil(map_util); // Set collision checking function
   planner_ptr->updateMap();
   return planner_ptr;
 }
 
-std::shared_ptr<DMPlanner3D> setUpDMP(std::shared_ptr<VoxelMapUtil>  map_util){
+std::shared_ptr<DMPlanner3D> setUpDMP(const std::shared_ptr<VoxelMapUtil> &map_util){
   std::shared_ptr<DMPlanner3D> dmplanner_ptr(new DMPlanner3D(true)); // Declare a planner
-  dmplanner_ptr->setMapUtil(map_util); // Set collision checking function
-  dmplanner_ptr->updateMap();
+  dmplanner_ptr->setMap(map_util,Vec3f(0.0, 0.0, 0.0)); // Set collision checking function
+  //~ dmplanner_ptr->updateMap();
   dmplanner_ptr->setPotentialRadius(Vec3f(1.0, 1.0, 1.0)); // Set 2D potential field radius
   dmplanner_ptr->setSearchRadius(Vec3f(0.5, 0.5, 0.5)); // Set the valid search region around given path
   return dmplanner_ptr;
@@ -67,7 +67,7 @@ std::shared_ptr<DMPlanner3D> setUpDMP(std::shared_ptr<VoxelMapUtil>  map_util){
 
 
 
-std::vector<nav_msgs::Path> do_planning(std::shared_ptr<JPSPlanner3D> planner_ptr , std::shared_ptr<DMPlanner3D> dmplanner_ptr){
+std::vector<nav_msgs::Path> do_planning(const std::shared_ptr<JPSPlanner3D> &planner_ptr , const std::shared_ptr<DMPlanner3D> &dmplanner_ptr){
   nav_msgs::Path path;
   std::vector<nav_msgs::Path> paths;
   path.header.frame_id = "yaml";
@@ -130,7 +130,7 @@ std::vector<nav_msgs::Path> do_planning(std::shared_ptr<JPSPlanner3D> planner_pt
 
 ros::Publisher marker_pub;
 
-void checkMap(std::shared_ptr<VoxelMapUtil>  map_util){
+void checkMap(const std::shared_ptr<VoxelMapUtil> &map_util){
 	ROS_INFO("checking map");
 	const Vec3i dim = map_util->getDim();
 	const double res = map_util->getRes();
@@ -174,8 +174,7 @@ int main(int argc, char** argv) {
 	}
 	
 	std::shared_ptr<VoxelMapUtil> map_util = readMap(argv[1]);
-	//~ std::vector<int8_t> cmap_ = map_util->getMap();
-	//~ std::cout << "test" << cmap_[0] <<std::endl;
+	std::vector<int8_t> cmap_ = map_util->getMap();
 	std::shared_ptr<JPSPlanner3D> planner_ptr = setUpJPS(map_util);
 	std::shared_ptr<DMPlanner3D> dmplanner_ptr = setUpDMP(map_util);
 	std::vector<nav_msgs::Path> paths;
@@ -184,13 +183,13 @@ int main(int argc, char** argv) {
 	while (ros::ok()){
 		  ros::spinOnce();
 		  if (replan_flag){
-			map_util = readMap(argv[1]);
+			//~ map_util = readMap(argv[1]);
 			dmplanner_ptr = setUpDMP(map_util);
 
 			paths = do_planning(planner_ptr, dmplanner_ptr);
 			replan_flag = false;
 		  }
-		  if (paths.size()>0){
+		  if (!paths.empty()){
 			  path_pub.publish(paths[0]);
 			  dmp_path_pub.publish(paths[1]);
 		  }
