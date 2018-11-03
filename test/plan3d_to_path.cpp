@@ -60,8 +60,8 @@ std::shared_ptr<DMPlanner3D> setUpDMP(const std::shared_ptr<VoxelMapUtil> &map_u
   std::shared_ptr<DMPlanner3D> dmplanner_ptr(new DMPlanner3D(true)); // Declare a planner
   dmplanner_ptr->setMap(map_util,Vec3f(0.0, 0.0, 0.0)); // Set collision checking function
   //~ dmplanner_ptr->updateMap();
-  dmplanner_ptr->setPotentialRadius(Vec3f(1.0, 1.0, 1.0)); // Set 2D potential field radius
-  dmplanner_ptr->setSearchRadius(Vec3f(0.5, 0.5, 0.5)); // Set the valid search region around given path
+  dmplanner_ptr->setPotentialRadius(Vec3f(20.5, 20.5, 20.5)); // Set 2D potential field radius
+  dmplanner_ptr->setSearchRadius(Vec3f(1.5, 1.5, 1.5)); // Set the valid search region around given path
   return dmplanner_ptr;
 }
 
@@ -70,7 +70,7 @@ std::shared_ptr<DMPlanner3D> setUpDMP(const std::shared_ptr<VoxelMapUtil> &map_u
 std::vector<nav_msgs::Path> do_planning(const std::shared_ptr<JPSPlanner3D> &planner_ptr , const std::shared_ptr<DMPlanner3D> &dmplanner_ptr){
   nav_msgs::Path path;
   std::vector<nav_msgs::Path> paths;
-  path.header.frame_id = "yaml";
+  path.header.frame_id = "world";
   path.header.stamp = ros::Time();
   
   if (ps_goal.pose.position.x == ps_start.pose.position.x && ps_goal.pose.position.y == ps_start.pose.position.y && ps_goal.pose.position.z == ps_start.pose.position.z){
@@ -85,7 +85,9 @@ std::vector<nav_msgs::Path> do_planning(const std::shared_ptr<JPSPlanner3D> &pla
 
   try{
 	listener.waitForTransform("yaml", "map", ros::Time(0), ros::Duration(2));
+	listener.waitForTransform("yaml", "world", ros::Time(0), ros::Duration(2));
 	listener.lookupTransform("yaml", "map", ros::Time(0), transform);
+	listener.lookupTransform("yaml", "world", ros::Time(0), transform);
 	listener.transformPose("yaml",ps_start, ps_start);
 	listener.transformPose("yaml",ps_goal, ps_goal);
    }
@@ -101,12 +103,17 @@ std::vector<nav_msgs::Path> do_planning(const std::shared_ptr<JPSPlanner3D> &pla
 
   auto path_jps = planner_ptr->getRawPath();
   geometry_msgs::PoseStamped posestamp;
-  posestamp.header.frame_id = "yaml";
   for(const auto& it: path_jps){
 	posestamp.header.stamp = ros::Time();
+    posestamp.header.frame_id = "yaml";
 	posestamp.pose.position.x = it.transpose()[0];
 	posestamp.pose.position.y = it.transpose()[1];
 	posestamp.pose.position.z = it.transpose()[2];
+	posestamp.pose.orientation.w = 1;
+	posestamp.pose.orientation.x = 0;
+	posestamp.pose.orientation.y = 0;
+	posestamp.pose.orientation.z = 0;
+	listener.transformPose("world",posestamp, posestamp);
 	path.poses.push_back(posestamp);
   }
   paths.push_back(path);
@@ -117,9 +124,15 @@ std::vector<nav_msgs::Path> do_planning(const std::shared_ptr<JPSPlanner3D> &pla
   path.poses.clear();
   for(const auto& it: path_dmp){
 	posestamp.header.stamp = ros::Time();
+    posestamp.header.frame_id = "yaml";
 	posestamp.pose.position.x = it.transpose()[0];
 	posestamp.pose.position.y = it.transpose()[1];
 	posestamp.pose.position.z = it.transpose()[2];
+	posestamp.pose.orientation.w = 1;
+	posestamp.pose.orientation.x = 0;
+	posestamp.pose.orientation.y = 0;
+	posestamp.pose.orientation.z = 0;
+	listener.transformPose("world",posestamp, posestamp);
 	path.poses.push_back(posestamp);
   }  	
   paths.push_back(path);
