@@ -10,6 +10,7 @@
 #include <tf/transform_listener.h>
 #include <tf/tf.h>
 #include <visualization_msgs/Marker.h>
+#include <nav_msgs/Odometry.h>
 
 
 
@@ -18,20 +19,33 @@ ros::Publisher dmp_path_pub;
 geometry_msgs::PoseStamped ps_start;
 geometry_msgs::PoseStamped ps_goal;
 bool replan_flag;
+nav_msgs::Odometry odom;
 
 using namespace JPS;
 
+void odomCallback(const nav_msgs::Odometry::ConstPtr& msg){
+	odom = *msg;
+}
 void waypointsCallback(const nav_msgs::Path::ConstPtr& msg){
 	ROS_INFO("waypoints received");
 	if (msg->poses.size()>2) ROS_WARN("first 2 waypoints treated as start, goal. have not yet implemented handling additional points");
-	if (msg->poses.size()<2) {
-		ROS_ERROR("must publish at least two waypoints");
+	if (msg->poses.size()<1) {
+		ROS_ERROR("must publish at least one waypoint");
 		return;
 	}
-	ps_start = msg->poses[0];
-	ps_goal = msg->poses[1];
-	ps_start.header.frame_id = msg->header.frame_id;
-	ps_goal.header.frame_id = msg->header.frame_id;
+	if (msg->poses.size()==1){
+		ps_start.pose = odom.pose.pose;
+		ps_start.header.frame_id = odom.header.frame_id;
+		ps_goal = msg->poses[0];
+		ps_goal.header.frame_id = msg->header.frame_id;
+		ROS_INFO("%f %f %f",ps_start.pose.position.x,ps_start.pose.position.y,ps_start.pose.position.z);
+	}
+	else{
+		ps_start = msg->poses[0];
+		ps_start.header.frame_id = msg->header.frame_id;
+		ps_goal = msg->poses[1];
+		ps_goal.header.frame_id = msg->header.frame_id;
+	}
 	replan_flag = true;
 }
 
@@ -84,17 +98,18 @@ std::vector<nav_msgs::Path> do_planning(const std::shared_ptr<JPSPlanner3D> &pla
   tf::TransformListener listener;
 
   try{
-	listener.waitForTransform("yaml", "map", ros::Time(0), ros::Duration(2));
-	listener.waitForTransform("yaml", "world", ros::Time(0), ros::Duration(2));
-	listener.lookupTransform("yaml", "map", ros::Time(0), transform);
-	listener.lookupTransform("yaml", "world", ros::Time(0), transform);
-	listener.transformPose("yaml",ps_start, ps_start);
-	listener.transformPose("yaml",ps_goal, ps_goal);
+	listener.waitForTransform("map", "yaml", ros::Time(0), ros::Duration(1));
+	listener.waitForTransform("world", "yaml", ros::Time(0), ros::Duration(1));
+	listener.transformPose("yaml",ros::Time(0),ps_start,ps_start.header.frame_id, ps_start);
+	listener.transformPose("yaml",ros::Time(0),ps_goal,ps_goal.header.frame_id, ps_goal);
+
    }
    catch (tf::TransformException ex){
       ROS_ERROR("%s",ex.what());
       ros::Duration(1.0).sleep();
+	 return paths;
    }
+
 	const Vec3f start(ps_start.pose.position.x,ps_start.pose.position.y,ps_start.pose.position.z);
 	const Vec3f goal(ps_goal.pose.position.x,ps_goal.pose.position.y,ps_goal.pose.position.z);
 
@@ -179,6 +194,7 @@ int main(int argc, char** argv) {
     path_pub = nh.advertise<nav_msgs::Path>("path", 1);
     dmp_path_pub = nh.advertise<nav_msgs::Path>("dmp_path", 1);
 	ros::Subscriber sub = nh.subscribe("/waypoints", 1000, waypointsCallback);
+	ros::Subscriber odom_sub = nh.subscribe("/ddk/ground_truth/odom", 10, odomCallback);
     marker_pub = nh.advertise<visualization_msgs::Marker>("map_check", 1);
 
 	if(argc != 2) {
