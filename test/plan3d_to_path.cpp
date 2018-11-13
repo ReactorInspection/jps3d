@@ -11,7 +11,7 @@
 #include <tf/tf.h>
 #include <visualization_msgs/Marker.h>
 #include <nav_msgs/Odometry.h>
-
+#include <math.h>
 
 
 ros::Publisher path_pub;
@@ -74,19 +74,53 @@ std::shared_ptr<DMPlanner3D> setUpDMP(const std::shared_ptr<VoxelMapUtil> &map_u
   std::shared_ptr<DMPlanner3D> dmplanner_ptr(new DMPlanner3D(true)); // Declare a planner
   dmplanner_ptr->setMap(map_util,Vec3f(0.0, 0.0, 0.0)); // Set collision checking function
   //~ dmplanner_ptr->updateMap();
-  dmplanner_ptr->setPotentialRadius(Vec3f(20.5, 20.5, 20.5)); // Set 2D potential field radius
+  dmplanner_ptr->setPotentialRadius(Vec3f(2.5, 2.5, 2.5)); // Set 3D potential field radius
   dmplanner_ptr->setSearchRadius(Vec3f(1.5, 1.5, 1.5)); // Set the valid search region around given path
   return dmplanner_ptr;
 }
 
-
-
-std::vector<nav_msgs::Path> do_planning(const std::shared_ptr<JPSPlanner3D> &planner_ptr , const std::shared_ptr<DMPlanner3D> &dmplanner_ptr){
+nav_msgs::Path create_path(auto planner_path, tf::TransformListener &listener){
+  geometry_msgs::PoseStamped posestamp;
   nav_msgs::Path path;
-  std::vector<nav_msgs::Path> paths;
   path.header.frame_id = "world";
   path.header.stamp = ros::Time();
-  
+
+  for(const auto& it: planner_path){
+	posestamp.header.stamp = ros::Time();
+    posestamp.header.frame_id = "yaml";
+	posestamp.pose.position.x = it.transpose()[0];
+	posestamp.pose.position.y = it.transpose()[1];
+	posestamp.pose.position.z = it.transpose()[2];
+	posestamp.pose.orientation.w = 1;
+	posestamp.pose.orientation.x = 0;
+	posestamp.pose.orientation.y = 0;
+	posestamp.pose.orientation.z = 0;
+	listener.transformPose("world",posestamp, posestamp);
+	// linear interpolation to add points to path for ewok to run better
+	if (path.poses.size()>0){
+		float diff_x = posestamp.pose.position.x - path.poses.back().pose.position.x;
+		float diff_y = posestamp.pose.position.y - path.poses.back().pose.position.y;
+		float diff_z = posestamp.pose.position.z - path.poses.back().pose.position.z;
+		int num_steps = int(sqrt(diff_x*diff_x+diff_y*diff_y+diff_z*diff_z)/0.5);
+		geometry_msgs::PoseStamped interm_pt = posestamp;
+		geometry_msgs::PoseStamped last_pt = path.poses.back();
+		for (int i = 1; i < num_steps; i++){
+			interm_pt.pose.position.x = diff_x*i/num_steps + last_pt.pose.position.x;
+			interm_pt.pose.position.y = diff_y*i/num_steps + last_pt.pose.position.y;
+			interm_pt.pose.position.z = diff_z*i/num_steps + last_pt.pose.position.z;
+			path.poses.push_back(interm_pt);
+		}
+	}
+	path.poses.push_back(posestamp);
+  }
+  return path;  	
+
+}
+
+std::vector<nav_msgs::Path> do_planning(const std::shared_ptr<JPSPlanner3D> &planner_ptr , const std::shared_ptr<DMPlanner3D> &dmplanner_ptr){
+
+  std::vector<nav_msgs::Path> paths;
+    
   if (ps_goal.pose.position.x == ps_start.pose.position.x && ps_goal.pose.position.y == ps_start.pose.position.y && ps_goal.pose.position.z == ps_start.pose.position.z){
 	   ROS_ERROR("start and goal poses are the same. Have you published waypoints?");
 	   return paths;
@@ -102,7 +136,6 @@ std::vector<nav_msgs::Path> do_planning(const std::shared_ptr<JPSPlanner3D> &pla
 	listener.waitForTransform("world", "yaml", ros::Time(0), ros::Duration(1));
 	listener.transformPose("yaml",ros::Time(0),ps_start,ps_start.header.frame_id, ps_start);
 	listener.transformPose("yaml",ros::Time(0),ps_goal,ps_goal.header.frame_id, ps_goal);
-
    }
    catch (tf::TransformException ex){
       ROS_ERROR("%s",ex.what());
@@ -113,45 +146,16 @@ std::vector<nav_msgs::Path> do_planning(const std::shared_ptr<JPSPlanner3D> &pla
 	const Vec3f start(ps_start.pose.position.x,ps_start.pose.position.y,ps_start.pose.position.z);
 	const Vec3f goal(ps_goal.pose.position.x,ps_goal.pose.position.y,ps_goal.pose.position.z);
 
-
+  // Run JPS Planner
   planner_ptr->plan(start, goal, 1, true); // Plan from start to goal using JPS
-
   auto path_jps = planner_ptr->getRawPath();
-  geometry_msgs::PoseStamped posestamp;
-  for(const auto& it: path_jps){
-	posestamp.header.stamp = ros::Time();
-    posestamp.header.frame_id = "yaml";
-	posestamp.pose.position.x = it.transpose()[0];
-	posestamp.pose.position.y = it.transpose()[1];
-	posestamp.pose.position.z = it.transpose()[2];
-	posestamp.pose.orientation.w = 1;
-	posestamp.pose.orientation.x = 0;
-	posestamp.pose.orientation.y = 0;
-	posestamp.pose.orientation.z = 0;
-	listener.transformPose("world",posestamp, posestamp);
-	path.poses.push_back(posestamp);
-  }
-  paths.push_back(path);
+  paths.push_back(create_path(path_jps,listener));
 
   // Run DMP planner
   dmplanner_ptr->computePath(start, goal, path_jps); // Compute the path given the jps path
   const auto path_dmp = dmplanner_ptr->getPath();
-  path.poses.clear();
-  for(const auto& it: path_dmp){
-	posestamp.header.stamp = ros::Time();
-    posestamp.header.frame_id = "yaml";
-	posestamp.pose.position.x = it.transpose()[0];
-	posestamp.pose.position.y = it.transpose()[1];
-	posestamp.pose.position.z = it.transpose()[2];
-	posestamp.pose.orientation.w = 1;
-	posestamp.pose.orientation.x = 0;
-	posestamp.pose.orientation.y = 0;
-	posestamp.pose.orientation.z = 0;
-	listener.transformPose("world",posestamp, posestamp);
-	path.poses.push_back(posestamp);
-  }  	
-  paths.push_back(path);
-
+  paths.push_back(create_path(path_dmp,listener));
+  
   return paths;
   
 }
@@ -208,13 +212,11 @@ int main(int argc, char** argv) {
 	std::shared_ptr<DMPlanner3D> dmplanner_ptr = setUpDMP(map_util);
 	std::vector<nav_msgs::Path> paths;
 	replan_flag = false;
-	checkMap(map_util);
+	//~ checkMap(map_util);
 	while (ros::ok()){
 		  ros::spinOnce();
 		  if (replan_flag){
-			//~ map_util = readMap(argv[1]);
 			dmplanner_ptr = setUpDMP(map_util);
-
 			paths = do_planning(planner_ptr, dmplanner_ptr);
 			replan_flag = false;
 		  }
