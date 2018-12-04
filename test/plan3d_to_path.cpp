@@ -19,6 +19,7 @@ using namespace JPS;
 
 ros::Publisher path_pub;
 ros::Publisher dmp_path_pub;
+ros::Publisher marker_pub;
 geometry_msgs::PoseStamped ps_start;
 geometry_msgs::PoseStamped ps_goal;
 bool replan_flag;
@@ -180,7 +181,36 @@ std::vector<nav_msgs::Path> do_planning(const std::shared_ptr<JPSPlanner3D> &pla
   
 }
 
-ros::Publisher marker_pub;
+void checkMap(const std::shared_ptr<VoxelMapUtil> &map_util){
+	ROS_INFO("checking map");
+	const Vec3i dim = map_util->getDim();
+	const double res = map_util->getRes();
+	visualization_msgs::Marker marker;
+	marker.header.frame_id = "yaml";
+	marker.header.stamp = ros::Time();
+	marker.type = visualization_msgs::Marker::CUBE_LIST;
+	marker.scale.x = res;
+	marker.scale.y = res;
+	marker.scale.z = res;
+	marker.color.a = 1.0;
+	marker.color.r = 0.0;
+	marker.color.g = 1.0;
+	marker.color.b = 0.0;
+	for(int x = 0; x < dim(0); x ++) {
+		for(int y = 0; y < dim(1); y ++) {
+			for(int z = 0; z < dim(2); z ++) {
+			  if(!map_util->isFree(Vec3i(x, y,z))) {
+				Vec3f pt = map_util->intToFloat(Vec3i(x, y,z));
+				geometry_msgs::Point point;
+				point.x = pt(0);
+				point.y = pt(1);
+				point.z = pt(2);
+				marker.points.push_back(point);
+	}}}}
+
+    marker_pub.publish( marker );
+    ROS_INFO("finished checking map");
+}
 
 int main(int argc, char** argv) {
     ros::init(argc, argv, "plan3d_to_path");
@@ -195,6 +225,7 @@ int main(int argc, char** argv) {
 
 	if(argc == 2) {
 		std::shared_ptr<VoxelMapUtil> map_util = readMap(argv[1]);
+		ROS_INFO("Using yaml map");
 	}
     while(ros::ok() && !map_initialized_) {
 		ROS_WARN_ONCE("Map not initialized!");
@@ -207,6 +238,7 @@ int main(int argc, char** argv) {
 	std::shared_ptr<DMPlanner3D> dmplanner_ptr = setUpDMP(map_util);
 	std::vector<nav_msgs::Path> paths;
 	replan_flag = false;
+	//~ checkMap(map_util);
 	while (ros::ok()){
 		  ros::spinOnce();
 		  if (replan_flag){
