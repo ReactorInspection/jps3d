@@ -54,9 +54,38 @@ void waypointsCallback(const nav_msgs::Path::ConstPtr& msg){
 	replan_flag = true;
 }
 
+void checkMap(const std::shared_ptr<VoxelMapUtil> &map_util){
+	ROS_INFO("checking map");
+	const Vec3i dim = map_util->getDim();
+	const double res = map_util->getRes();
+	visualization_msgs::Marker marker;
+	marker.header.frame_id = "yaml";
+	marker.header.stamp = ros::Time();
+	marker.type = visualization_msgs::Marker::CUBE_LIST;
+	marker.scale.x = res;
+	marker.scale.y = res;
+	marker.scale.z = res;
+	marker.color.a = 1.0;
+	marker.color.r = 0.0;
+	marker.color.g = 1.0;
+	marker.color.b = 0.0;
+	for(int x = 0; x < dim(0); x ++) {
+		for(int y = 0; y < dim(1); y ++) {
+			for(int z = 0; z < dim(2); z ++) {
+			  if(!map_util->isFree(Vec3i(x, y,z))) {
+				Vec3f pt = map_util->intToFloat(Vec3i(x, y,z));
+				geometry_msgs::Point point;
+				point.x = pt(0);
+				point.y = pt(1);
+				point.z = pt(2);
+				marker.points.push_back(point);
+	}}}}
+
+    marker_pub.publish( marker );
+}
+
 void mapCallback(const pluto_msgs::VoxelMap::ConstPtr& msg) {
 	pluto_msgs::VoxelMap map_ = *msg;
-	map_util = std::make_shared<VoxelMapUtil>();
 	Vec3f ori(map_.origin.x, map_.origin.y, map_.origin.z);
 	Vec3i dim(map_.dim.x, map_.dim.y, map_.dim.z);
 	decimal_t res = map_.resolution;
@@ -67,9 +96,11 @@ void mapCallback(const pluto_msgs::VoxelMap::ConstPtr& msg) {
 		ROS_INFO("Map initialized!");
 	}
 	else ROS_INFO("Map updated");
+	checkMap(map_util);
+
 }
 
-std::shared_ptr<VoxelMapUtil> readMap(char* map){
+void readMap(char* map){
   // Read the map from yaml
   ROS_INFO("reading map (takes a few seconds)");
   MapReader<Vec3i, Vec3f> reader(map, true); // Map read from a given file
@@ -78,9 +109,11 @@ std::shared_ptr<VoxelMapUtil> readMap(char* map){
   }
   
   // store map in map_util
-  std::shared_ptr<VoxelMapUtil> map_util = std::make_shared<VoxelMapUtil>();
+  //~ std::shared_ptr<VoxelMapUtil> map_util = std::make_shared<VoxelMapUtil>();
   map_util->setMap(reader.origin(), reader.dim(), reader.data(), reader.resolution());
-  return map_util;
+  map_initialized_ = true;
+  ROS_INFO("Map initialized!");
+
 }
 
 	
@@ -181,51 +214,29 @@ std::vector<nav_msgs::Path> do_planning(const std::shared_ptr<JPSPlanner3D> &pla
   
 }
 
-void checkMap(const std::shared_ptr<VoxelMapUtil> &map_util){
-	ROS_INFO("checking map");
-	const Vec3i dim = map_util->getDim();
-	const double res = map_util->getRes();
-	visualization_msgs::Marker marker;
-	marker.header.frame_id = "yaml";
-	marker.header.stamp = ros::Time();
-	marker.type = visualization_msgs::Marker::CUBE_LIST;
-	marker.scale.x = res;
-	marker.scale.y = res;
-	marker.scale.z = res;
-	marker.color.a = 1.0;
-	marker.color.r = 0.0;
-	marker.color.g = 1.0;
-	marker.color.b = 0.0;
-	for(int x = 0; x < dim(0); x ++) {
-		for(int y = 0; y < dim(1); y ++) {
-			for(int z = 0; z < dim(2); z ++) {
-			  if(!map_util->isFree(Vec3i(x, y,z))) {
-				Vec3f pt = map_util->intToFloat(Vec3i(x, y,z));
-				geometry_msgs::Point point;
-				point.x = pt(0);
-				point.y = pt(1);
-				point.z = pt(2);
-				marker.points.push_back(point);
-	}}}}
-
-    marker_pub.publish( marker );
-    ROS_INFO("finished checking map");
-}
 
 int main(int argc, char** argv) {
     ros::init(argc, argv, "plan3d_to_path");
     ros::NodeHandle nh("~");
-    path_pub = nh.advertise<nav_msgs::Path>("path", 1);
+    std::string robot_name, gazebo_frame, mapper_frame;
+    //mapper_frame should be for the robot if running e.g. SLAM, and should be for the octomap for a static map
+    //yaml frame is assumed to be "/yaml" The map to yaml static TF is outputted to the terminal when octomap_create_jps_map is run
+    nh.param<std::string>("robot_name", robot_name, "ddk");
+    nh.param<std::string>("gazebo_frame", gazebo_frame, "world");
+    nh.param<std::string>("mapper_frame", mapper_frame, "map");
+    
+    path_pub = nh.advertise<nav_msgs::Path>("jps_path", 1);
     dmp_path_pub = nh.advertise<nav_msgs::Path>("dmp_path", 1);
 	ros::Subscriber sub = nh.subscribe("/waypoints", 1000, waypointsCallback);
-	ros::Subscriber odom_sub = nh.subscribe("/juliett/ground_truth/odom", 10, odomCallback);
-	ros::Subscriber map_sub = nh.subscribe("/voxel_map", 2, mapCallback);
+	ros::Subscriber odom_sub = nh.subscribe("/" + robot_name + "/ground_truth/odom", 10, odomCallback);
+	ros::Subscriber map_sub = nh.subscribe("/cloud_to_map/voxel_map", 2, mapCallback);
+	map_util = std::make_shared<VoxelMapUtil>();
 
     marker_pub = nh.advertise<visualization_msgs::Marker>("map_check", 1);
 
 	if(argc == 2) {
-		std::shared_ptr<VoxelMapUtil> map_util = readMap(argv[1]);
 		ROS_INFO("Using yaml map");
+		readMap(argv[1]);
 	}
     while(ros::ok() && !map_initialized_) {
 		ROS_WARN_ONCE("Map not initialized!");
@@ -233,12 +244,11 @@ int main(int argc, char** argv) {
 		ros::spinOnce();
 	}
 
-	std::vector<int8_t> cmap_ = map_util->getMap();
 	std::shared_ptr<JPSPlanner3D> planner_ptr = setUpJPS(map_util);
 	std::shared_ptr<DMPlanner3D> dmplanner_ptr = setUpDMP(map_util);
 	std::vector<nav_msgs::Path> paths;
 	replan_flag = false;
-	//~ checkMap(map_util);
+	checkMap(map_util);
 	while (ros::ok()){
 		  ros::spinOnce();
 		  if (replan_flag){
