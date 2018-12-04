@@ -9,7 +9,7 @@ ENDIF()
 
 set(BUILD_SHARED_LIBS ON)
 
-find_package(catkin REQUIRED COMPONENTS roscpp nav_msgs geometry_msgs tf)
+find_package(catkin REQUIRED COMPONENTS roscpp nav_msgs geometry_msgs tf pluto_msgs)
 FIND_PACKAGE(Eigen3 REQUIRED)
 FIND_PACKAGE(PkgConfig REQUIRED)
 PKG_CHECK_MODULES(YAMLCPP REQUIRED yaml-cpp)
@@ -49,6 +49,7 @@ target_link_libraries(test_distance_map_planner_2d jps_lib dmp_lib ${YAMLCPP_LIB
 add_test(test_distance_map_planner_2d test_distance_map_planner_2d ${CMAKE_SOURCE_DIR}/data/corridor.yaml)
 
 add_executable(plan3d_to_path test/plan3d_to_path.cpp)
+add_dependencies(plan3d_to_path ${catkin_EXPORTED_TARGETS})
 target_link_libraries(plan3d_to_path ${catkin_LIBRARIES} jps_lib dmp_lib ${YAMLCPP_LIBRARIES})
 
 install(FILES "${PROJECT_NAME}Config.cmake" "${PROJECT_NAME}ConfigVersion.cmake"

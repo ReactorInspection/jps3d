@@ -12,6 +12,9 @@
 #include <visualization_msgs/Marker.h>
 #include <nav_msgs/Odometry.h>
 #include <math.h>
+#include <pluto_msgs/VoxelMap.h>
+
+using namespace JPS;
 
 
 ros::Publisher path_pub;
@@ -20,8 +23,9 @@ geometry_msgs::PoseStamped ps_start;
 geometry_msgs::PoseStamped ps_goal;
 bool replan_flag;
 nav_msgs::Odometry odom;
+std::shared_ptr<VoxelMapUtil> map_util;
+bool map_initialized_ = false;
 
-using namespace JPS;
 
 void odomCallback(const nav_msgs::Odometry::ConstPtr& msg){
 	odom = *msg;
@@ -49,6 +53,21 @@ void waypointsCallback(const nav_msgs::Path::ConstPtr& msg){
 	replan_flag = true;
 }
 
+void mapCallback(const pluto_msgs::VoxelMap::ConstPtr& msg) {
+	pluto_msgs::VoxelMap map_ = *msg;
+	map_util = std::make_shared<VoxelMapUtil>();
+	Vec3f ori(map_.origin.x, map_.origin.y, map_.origin.z);
+	Vec3i dim(map_.dim.x, map_.dim.y, map_.dim.z);
+	decimal_t res = map_.resolution;
+	std::vector<signed char> map = map_.data;
+	map_util->setMap(ori, dim, map, res);
+	if (!map_initialized_){
+		map_initialized_ = true;
+		ROS_INFO("Map initialized!");
+	}
+	else ROS_INFO("Map updated");
+}
+
 std::shared_ptr<VoxelMapUtil> readMap(char* map){
   // Read the map from yaml
   ROS_INFO("reading map (takes a few seconds)");
@@ -63,6 +82,7 @@ std::shared_ptr<VoxelMapUtil> readMap(char* map){
   return map_util;
 }
 
+	
 std::shared_ptr<JPSPlanner3D> setUpJPS(const std::shared_ptr<VoxelMapUtil> &map_util){
   std::shared_ptr<JPSPlanner3D> planner_ptr(new JPSPlanner3D(true)); // Declare a planner
   planner_ptr->setMapUtil(map_util); // Set collision checking function
@@ -162,57 +182,31 @@ std::vector<nav_msgs::Path> do_planning(const std::shared_ptr<JPSPlanner3D> &pla
 
 ros::Publisher marker_pub;
 
-void checkMap(const std::shared_ptr<VoxelMapUtil> &map_util){
-	ROS_INFO("checking map");
-	const Vec3i dim = map_util->getDim();
-	const double res = map_util->getRes();
-	visualization_msgs::Marker marker;
-	marker.header.frame_id = "yaml";
-	marker.header.stamp = ros::Time();
-	marker.type = visualization_msgs::Marker::CUBE_LIST;
-	marker.scale.x = res;
-	marker.scale.y = res;
-	marker.scale.z = res;
-	marker.color.a = 1.0;
-	marker.color.r = 0.0;
-	marker.color.g = 1.0;
-	marker.color.b = 0.0;
-	for(int x = 0; x < dim(0); x ++) {
-		for(int y = 0; y < dim(1); y ++) {
-			for(int z = 0; z < dim(2); z ++) {
-			  if(!map_util->isFree(Vec3i(x, y,z))) {
-				Vec3f pt = map_util->intToFloat(Vec3i(x, y,z));
-				geometry_msgs::Point point;
-				point.x = pt(0);
-				point.y = pt(1);
-				point.z = pt(2);
-				marker.points.push_back(point);
-	}}}}
-
-    marker_pub.publish( marker );
-    ROS_INFO("finished checking map");
-}
 int main(int argc, char** argv) {
     ros::init(argc, argv, "plan3d_to_path");
     ros::NodeHandle nh("~");
     path_pub = nh.advertise<nav_msgs::Path>("path", 1);
     dmp_path_pub = nh.advertise<nav_msgs::Path>("dmp_path", 1);
 	ros::Subscriber sub = nh.subscribe("/waypoints", 1000, waypointsCallback);
-	ros::Subscriber odom_sub = nh.subscribe("/ddk/ground_truth/odom", 10, odomCallback);
+	ros::Subscriber odom_sub = nh.subscribe("/juliett/ground_truth/odom", 10, odomCallback);
+	ros::Subscriber map_sub = nh.subscribe("/voxel_map", 2, mapCallback);
+
     marker_pub = nh.advertise<visualization_msgs::Marker>("map_check", 1);
 
-	if(argc != 2) {
-		printf(ANSI_COLOR_RED "Input yaml required!\n" ANSI_COLOR_RESET);
-		return -1;
+	if(argc == 2) {
+		std::shared_ptr<VoxelMapUtil> map_util = readMap(argv[1]);
 	}
-	
-	std::shared_ptr<VoxelMapUtil> map_util = readMap(argv[1]);
+    while(ros::ok() && !map_initialized_) {
+		ROS_WARN_ONCE("Map not initialized!");
+		ros::Duration(0.5).sleep();
+		ros::spinOnce();
+	}
+
 	std::vector<int8_t> cmap_ = map_util->getMap();
 	std::shared_ptr<JPSPlanner3D> planner_ptr = setUpJPS(map_util);
 	std::shared_ptr<DMPlanner3D> dmplanner_ptr = setUpDMP(map_util);
 	std::vector<nav_msgs::Path> paths;
 	replan_flag = false;
-	//~ checkMap(map_util);
 	while (ros::ok()){
 		  ros::spinOnce();
 		  if (replan_flag){
