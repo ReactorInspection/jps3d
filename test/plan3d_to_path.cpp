@@ -26,6 +26,8 @@ bool replan_flag;
 nav_msgs::Odometry odom;
 std::shared_ptr<VoxelMapUtil> map_util;
 bool map_initialized_ = false;
+bool yaml_map = false;
+std::string robot_name, gazebo_frame, mapper_frame, planning_frame;
 
 
 void odomCallback(const nav_msgs::Odometry::ConstPtr& msg){
@@ -54,12 +56,12 @@ void waypointsCallback(const nav_msgs::Path::ConstPtr& msg){
 	replan_flag = true;
 }
 
-void checkMap(const std::shared_ptr<VoxelMapUtil> &map_util){
+void checkMap(){
 	ROS_INFO("checking map");
 	const Vec3i dim = map_util->getDim();
 	const double res = map_util->getRes();
 	visualization_msgs::Marker marker;
-	marker.header.frame_id = "yaml";
+	marker.header.frame_id = planning_frame;
 	marker.header.stamp = ros::Time();
 	marker.type = visualization_msgs::Marker::CUBE_LIST;
 	marker.scale.x = res;
@@ -96,7 +98,7 @@ void mapCallback(const pluto_msgs::VoxelMap::ConstPtr& msg) {
 		ROS_INFO("Map initialized!");
 	}
 	else ROS_INFO("Map updated");
-	checkMap(map_util);
+	checkMap();
 
 }
 
@@ -117,14 +119,14 @@ void readMap(char* map){
 }
 
 	
-std::shared_ptr<JPSPlanner3D> setUpJPS(const std::shared_ptr<VoxelMapUtil> &map_util){
+std::shared_ptr<JPSPlanner3D> setUpJPS(){
   std::shared_ptr<JPSPlanner3D> planner_ptr(new JPSPlanner3D(true)); // Declare a planner
   planner_ptr->setMapUtil(map_util); // Set collision checking function
   planner_ptr->updateMap();
   return planner_ptr;
 }
 
-std::shared_ptr<DMPlanner3D> setUpDMP(const std::shared_ptr<VoxelMapUtil> &map_util){
+std::shared_ptr<DMPlanner3D> setUpDMP(){
   std::shared_ptr<DMPlanner3D> dmplanner_ptr(new DMPlanner3D(true)); // Declare a planner
   dmplanner_ptr->setMap(map_util,Vec3f(0.0, 0.0, 0.0)); // Set collision checking function
   //~ dmplanner_ptr->updateMap();
@@ -136,12 +138,12 @@ std::shared_ptr<DMPlanner3D> setUpDMP(const std::shared_ptr<VoxelMapUtil> &map_u
 nav_msgs::Path create_path(auto planner_path, tf::TransformListener &listener){
   geometry_msgs::PoseStamped posestamp;
   nav_msgs::Path path;
-  path.header.frame_id = "world";
+  path.header.frame_id = gazebo_frame;
   path.header.stamp = ros::Time();
 
   for(const auto& it: planner_path){
 	posestamp.header.stamp = ros::Time();
-    posestamp.header.frame_id = "yaml";
+    posestamp.header.frame_id = planning_frame;
 	posestamp.pose.position.x = it.transpose()[0];
 	posestamp.pose.position.y = it.transpose()[1];
 	posestamp.pose.position.z = it.transpose()[2];
@@ -149,7 +151,7 @@ nav_msgs::Path create_path(auto planner_path, tf::TransformListener &listener){
 	posestamp.pose.orientation.x = 0;
 	posestamp.pose.orientation.y = 0;
 	posestamp.pose.orientation.z = 0;
-	listener.transformPose("world",posestamp, posestamp);
+	listener.transformPose(gazebo_frame,posestamp, posestamp);
 	// linear interpolation to add points to path for ewok to run better
 	if (path.poses.size()>0){
 		float diff_x = posestamp.pose.position.x - path.poses.back().pose.position.x;
@@ -181,15 +183,15 @@ std::vector<nav_msgs::Path> do_planning(const std::shared_ptr<JPSPlanner3D> &pla
    }
    else ROS_INFO("running planner");
 
-  //~ // give goals in the map frame, but give to planner in the yaml frame
   tf::StampedTransform transform;
   tf::TransformListener listener;
 
+
   try{
-	listener.waitForTransform("map", "yaml", ros::Time(0), ros::Duration(1));
-	listener.waitForTransform("world", "yaml", ros::Time(0), ros::Duration(1));
-	listener.transformPose("yaml",ros::Time(0),ps_start,ps_start.header.frame_id, ps_start);
-	listener.transformPose("yaml",ros::Time(0),ps_goal,ps_goal.header.frame_id, ps_goal);
+	listener.waitForTransform(mapper_frame, planning_frame, ros::Time(0), ros::Duration(1));
+	listener.waitForTransform(gazebo_frame, planning_frame, ros::Time(0), ros::Duration(1));
+	listener.transformPose(planning_frame,ros::Time(0),ps_start,ps_start.header.frame_id, ps_start);
+	listener.transformPose(planning_frame,ros::Time(0),ps_goal,ps_goal.header.frame_id, ps_goal);
    }
    catch (tf::TransformException ex){
       ROS_ERROR("%s",ex.what());
@@ -218,12 +220,16 @@ std::vector<nav_msgs::Path> do_planning(const std::shared_ptr<JPSPlanner3D> &pla
 int main(int argc, char** argv) {
     ros::init(argc, argv, "plan3d_to_path");
     ros::NodeHandle nh("~");
-    std::string robot_name, gazebo_frame, mapper_frame;
-    //mapper_frame should be for the robot if running e.g. SLAM, and should be for the octomap for a static map
-    //yaml frame is assumed to be "/yaml" The map to yaml static TF is outputted to the terminal when octomap_create_jps_map is run
-    nh.param<std::string>("robot_name", robot_name, "ddk");
+	//~ We do planning in the frame of the yaml file or VoxelMap (not octomap)
+	//~ For the yaml case, there are 3 frames, world (gazebo), map (octomap), and yaml (written map file, has to be shifted if the octomap has any negative values)
+	//~ There is also a base_link for the robot local frame, but it is not needed by the planning (we use the ground_truth/odom topic in the world frame)
+	//~ For the VoxelMap taken in by subscription case, there is the world (gazebo) and the map (local frame to the robot created by e.g. SLAM)
+
+	nh.param<std::string>("robot_name", robot_name, "ddk");
     nh.param<std::string>("gazebo_frame", gazebo_frame, "world");
     nh.param<std::string>("mapper_frame", mapper_frame, "map");
+	if (yaml_map) planning_frame = "yaml";
+	else planning_frame = mapper_frame;
     
     path_pub = nh.advertise<nav_msgs::Path>("jps_path", 1);
     dmp_path_pub = nh.advertise<nav_msgs::Path>("dmp_path", 1);
@@ -233,10 +239,10 @@ int main(int argc, char** argv) {
 	map_util = std::make_shared<VoxelMapUtil>();
 
     marker_pub = nh.advertise<visualization_msgs::Marker>("map_check", 1);
-
 	if(argc == 2) {
 		ROS_INFO("Using yaml map");
 		readMap(argv[1]);
+		yaml_map = true;
 	}
     while(ros::ok() && !map_initialized_) {
 		ROS_WARN_ONCE("Map not initialized!");
@@ -244,15 +250,15 @@ int main(int argc, char** argv) {
 		ros::spinOnce();
 	}
 
-	std::shared_ptr<JPSPlanner3D> planner_ptr = setUpJPS(map_util);
-	std::shared_ptr<DMPlanner3D> dmplanner_ptr = setUpDMP(map_util);
+	std::shared_ptr<JPSPlanner3D> planner_ptr = setUpJPS();
+	std::shared_ptr<DMPlanner3D> dmplanner_ptr = setUpDMP();
 	std::vector<nav_msgs::Path> paths;
 	replan_flag = false;
-	checkMap(map_util);
+	checkMap();
 	while (ros::ok()){
 		  ros::spinOnce();
 		  if (replan_flag){
-			dmplanner_ptr = setUpDMP(map_util);
+			dmplanner_ptr = setUpDMP();
 			paths = do_planning(planner_ptr, dmplanner_ptr);
 			replan_flag = false;
 		  }
