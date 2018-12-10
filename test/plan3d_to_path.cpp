@@ -233,9 +233,13 @@ int main(int argc, char** argv) {
     
     path_pub = nh.advertise<nav_msgs::Path>("jps_path", 1);
     dmp_path_pub = nh.advertise<nav_msgs::Path>("dmp_path", 1);
-	ros::Subscriber sub = nh.subscribe("/waypoints", 1000, waypointsCallback);
+    std::string waypoint_topic, voxel_topic;
+	ros::param::param<std::string>("waypoint_topic", waypoint_topic, "/waypoints");
+    ros::param::param<std::string>("voxel_topic", voxel_topic, "/cloud_to_map/voxel_map");
+
+	ros::Subscriber sub = nh.subscribe(waypoint_topic, 1000, waypointsCallback);
 	ros::Subscriber odom_sub = nh.subscribe("/" + robot_name + "/ground_truth/odom", 10, odomCallback);
-	ros::Subscriber map_sub = nh.subscribe("/cloud_to_map/voxel_map", 2, mapCallback);
+	ros::Subscriber map_sub = nh.subscribe(voxel_topic, 2, mapCallback);
 	map_util = std::make_shared<VoxelMapUtil>();
 
     marker_pub = nh.advertise<visualization_msgs::Marker>("map_check", 1);
