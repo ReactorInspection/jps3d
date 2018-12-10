@@ -220,17 +220,6 @@ std::vector<nav_msgs::Path> do_planning(const std::shared_ptr<JPSPlanner3D> &pla
 int main(int argc, char** argv) {
     ros::init(argc, argv, "plan3d_to_path");
     ros::NodeHandle nh("~");
-	//~ We do planning in the frame of the yaml file or VoxelMap (not octomap)
-	//~ For the yaml case, there are 3 frames, world (gazebo), map (octomap), and yaml (written map file, has to be shifted if the octomap has any negative values)
-	//~ There is also a base_link for the robot local frame, but it is not needed by the planning (we use the ground_truth/odom topic in the world frame)
-	//~ For the VoxelMap taken in by subscription case, there is the world (gazebo) and the map (local frame to the robot created by e.g. SLAM)
-
-	nh.param<std::string>("robot_name", robot_name, "ddk");
-    nh.param<std::string>("gazebo_frame", gazebo_frame, "world");
-    nh.param<std::string>("mapper_frame", mapper_frame, "map");
-	if (yaml_map) planning_frame = "yaml";
-	else planning_frame = mapper_frame;
-    
     path_pub = nh.advertise<nav_msgs::Path>("jps_path", 1);
     dmp_path_pub = nh.advertise<nav_msgs::Path>("dmp_path", 1);
     std::string waypoint_topic, voxel_topic;
@@ -238,16 +227,28 @@ int main(int argc, char** argv) {
     ros::param::param<std::string>("voxel_topic", voxel_topic, "/cloud_to_map/voxel_map");
 
 	ros::Subscriber sub = nh.subscribe(waypoint_topic, 1000, waypointsCallback);
+	nh.param<std::string>("robot_name", robot_name, "ddk");
 	ros::Subscriber odom_sub = nh.subscribe("/" + robot_name + "/ground_truth/odom", 10, odomCallback);
 	ros::Subscriber map_sub = nh.subscribe(voxel_topic, 2, mapCallback);
 	map_util = std::make_shared<VoxelMapUtil>();
 
     marker_pub = nh.advertise<visualization_msgs::Marker>("map_check", 1);
+	
+	//~ We do planning in the frame of the yaml file or VoxelMap (not octomap)
+	//~ For the yaml case, there are 3 frames, world (gazebo), map (octomap), and yaml (written map file, has to be shifted if the octomap has any negative values)
+	//~ There is also a base_link for the robot local frame, but it is not needed by the planning (we use the ground_truth/odom topic in the world frame)
+	//~ For the VoxelMap taken in by subscription case, there is the world (gazebo) and the map (local frame to the robot created by e.g. SLAM)
+
+    nh.param<std::string>("gazebo_frame", gazebo_frame, "world");
+    nh.param<std::string>("mapper_frame", mapper_frame, "map");
 	if(argc == 2) {
 		ROS_INFO("Using yaml map");
 		readMap(argv[1]);
 		yaml_map = true;
 	}
+	if (yaml_map) planning_frame = "yaml";
+	else planning_frame = mapper_frame;
+
     while(ros::ok() && !map_initialized_) {
 		ROS_WARN_ONCE("Map not initialized!");
 		ros::Duration(0.5).sleep();
