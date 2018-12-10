@@ -212,6 +212,10 @@ std::vector<nav_msgs::Path> do_planning(const std::shared_ptr<JPSPlanner3D> &pla
   const auto path_dmp = dmplanner_ptr->getPath();
   paths.push_back(create_path(path_dmp,listener));
   
+  if (!paths.empty()){
+	  path_pub.publish(paths[0]);
+	  dmp_path_pub.publish(paths[1]);
+  }
   return paths;
   
 }
@@ -267,10 +271,10 @@ int main(int argc, char** argv) {
 			paths = do_planning(planner_ptr, dmplanner_ptr);
 			replan_flag = false;
 		  }
-		  if (!paths.empty()){
-			  path_pub.publish(paths[0]);
-			  dmp_path_pub.publish(paths[1]);
-		  }
+		  //~ if (!paths.empty()){
+			  //~ path_pub.publish(paths[0]);
+			  //~ dmp_path_pub.publish(paths[1]);
+		  //~ }
 		  ros::Duration(1).sleep();
 	}
     return 0;
