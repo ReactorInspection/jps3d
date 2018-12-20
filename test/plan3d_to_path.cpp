@@ -27,7 +27,7 @@ nav_msgs::Odometry odom;
 std::shared_ptr<VoxelMapUtil> map_util;
 bool map_initialized_ = false;
 bool yaml_map = false;
-std::string robot_name, gazebo_frame, mapper_frame, planning_frame;
+std::string robot_name, gazebo_frame, mapper_frame, planning_frame, voxel_map_frame;
 
 
 void odomCallback(const nav_msgs::Odometry::ConstPtr& msg){
@@ -59,6 +59,7 @@ void waypointsCallback(const nav_msgs::Path::ConstPtr& msg){
 void checkMap(){
 	ROS_INFO("checking map");
 	const Vec3i dim = map_util->getDim();
+	//~ const Vec3f origin = map_util->getOrigin();
 	const double res = map_util->getRes();
 	visualization_msgs::Marker marker;
 	marker.header.frame_id = planning_frame;
@@ -82,7 +83,6 @@ void checkMap(){
 				point.z = pt(2);
 				marker.points.push_back(point);
 	}}}}
-
     marker_pub.publish( marker );
 }
 
@@ -93,6 +93,7 @@ void mapCallback(const pluto_msgs::VoxelMap::ConstPtr& msg) {
 	decimal_t res = map_.resolution;
 	std::vector<signed char> map = map_.data;
 	map_util->setMap(ori, dim, map, res);
+	voxel_map_frame = map_.header.frame_id;
 	if (!map_initialized_){
 		map_initialized_ = true;
 		ROS_INFO("Map initialized!");
@@ -228,7 +229,7 @@ int main(int argc, char** argv) {
     dmp_path_pub = nh.advertise<nav_msgs::Path>("dmp_path", 1);
     std::string waypoint_topic, voxel_topic;
 	ros::param::param<std::string>("waypoint_topic", waypoint_topic, "/waypoints");
-    ros::param::param<std::string>("voxel_topic", voxel_topic, "/cloud_to_map/voxel_map");
+    ros::param::param<std::string>("voxel_topic", voxel_topic, "/rb_to_voxel_map");
 
 	ros::Subscriber sub = nh.subscribe(waypoint_topic, 1000, waypointsCallback);
 	nh.param<std::string>("robot_name", robot_name, "ddk");
@@ -250,14 +251,16 @@ int main(int argc, char** argv) {
 		readMap(argv[1]);
 		yaml_map = true;
 	}
-	if (yaml_map) planning_frame = "yaml";
-	else planning_frame = mapper_frame;
 
     while(ros::ok() && !map_initialized_) {
-		ROS_WARN_ONCE("Map not initialized!");
+		ROS_WARN_ONCE("Map not initialized! Waiting for map on topic %s", voxel_topic.c_str());
 		ros::Duration(0.5).sleep();
 		ros::spinOnce();
 	}
+	
+	if (yaml_map) planning_frame = "yaml";
+	//~ else planning_frame = mapper_frame;
+	else planning_frame = voxel_map_frame;
 
 	std::shared_ptr<JPSPlanner3D> planner_ptr = setUpJPS();
 	std::shared_ptr<DMPlanner3D> dmplanner_ptr = setUpDMP();
