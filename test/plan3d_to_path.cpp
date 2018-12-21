@@ -16,269 +16,319 @@
 
 using namespace JPS;
 
+class Plan3DToPath
+{
+public:
+  Plan3DToPath();
+private:
+  void setUpJPS();
+  void setUpDMP();
+  void odomCallback(const nav_msgs::Odometry::ConstPtr& msg);
+  void mapCallback(const pluto_msgs::VoxelMap::ConstPtr& msg);
+  void waypointsCallback(const nav_msgs::Path::ConstPtr& msg);
+  void readMap(std::string map_file);
+  void publishMap();
+  void do_planning(geometry_msgs::PoseStamped& ps_start, geometry_msgs::PoseStamped& ps_goal, std::vector<nav_msgs::Path>& paths);
+  void create_path(vec_Vec3f planner_path, nav_msgs::Path& path);
 
-ros::Publisher path_pub;
-ros::Publisher dmp_path_pub;
-ros::Publisher marker_pub;
-geometry_msgs::PoseStamped ps_start;
-geometry_msgs::PoseStamped ps_goal;
-bool replan_flag;
-nav_msgs::Odometry odom;
-std::shared_ptr<VoxelMapUtil> map_util;
-bool map_initialized_ = false;
-bool yaml_map = false;
-std::string robot_name, gazebo_frame, mapper_frame, planning_frame, voxel_map_frame;
+  ros::NodeHandle nh_, pnh_;
 
+  ros::Publisher path_pub_, dmp_path_pub_, map_marker_pub_;
+  ros::Subscriber map_sub_, odom_sub_, waypoints_sub_;
+  nav_msgs::Odometry odom_;
 
-void odomCallback(const nav_msgs::Odometry::ConstPtr& msg){
-	odom = *msg;
-}
-void waypointsCallback(const nav_msgs::Path::ConstPtr& msg){
-	ROS_INFO("waypoints received");
-	if (msg->poses.size()>2) ROS_WARN("first 2 waypoints treated as start, goal. have not yet implemented handling additional points");
-	if (msg->poses.size()<1) {
-		ROS_ERROR("must publish at least one waypoint");
-		return;
-	}
-	if (msg->poses.size()==1){
-		ps_start.pose = odom.pose.pose;
-		ps_start.header.frame_id = odom.header.frame_id;
-		ps_goal = msg->poses[0];
-		ps_goal.header.frame_id = msg->header.frame_id;
-		ROS_INFO("%f %f %f",ps_start.pose.position.x,ps_start.pose.position.y,ps_start.pose.position.z);
-	}
-	else{
-		ps_start = msg->poses[0];
-		ps_start.header.frame_id = msg->header.frame_id;
-		ps_goal = msg->poses[1];
-		ps_goal.header.frame_id = msg->header.frame_id;
-	}
-	replan_flag = true;
-}
+  tf::TransformListener listener_;
 
-void checkMap(){
-	ROS_INFO("checking map");
-	const Vec3i dim = map_util->getDim();
-	//~ const Vec3f origin = map_util->getOrigin();
-	const double res = map_util->getRes();
-	visualization_msgs::Marker marker;
-	marker.header.frame_id = planning_frame;
-	marker.header.stamp = ros::Time();
-	marker.type = visualization_msgs::Marker::CUBE_LIST;
-	marker.scale.x = res;
-	marker.scale.y = res;
-	marker.scale.z = res;
-	marker.color.a = 1.0;
-	marker.color.r = 0.0;
-	marker.color.g = 1.0;
-	marker.color.b = 0.0;
-	for(int x = 0; x < dim(0); x ++) {
-		for(int y = 0; y < dim(1); y ++) {
-			for(int z = 0; z < dim(2); z ++) {
-			  if(!map_util->isFree(Vec3i(x, y,z))) {
-				Vec3f pt = map_util->intToFloat(Vec3i(x, y,z));
-				geometry_msgs::Point point;
-				point.x = pt(0);
-				point.y = pt(1);
-				point.z = pt(2);
-				marker.points.push_back(point);
-	}}}}
-    marker_pub.publish( marker );
-}
+  std::shared_ptr<VoxelMapUtil> map_util_;
+  bool map_initialized_;
+  bool yaml_map_;
+  std::string yaml_file_;
+  std::string world_frame_, planning_frame_, mapper_frame_;
 
-void mapCallback(const pluto_msgs::VoxelMap::ConstPtr& msg) {
-	pluto_msgs::VoxelMap map_ = *msg;
-	Vec3f ori(map_.origin.x, map_.origin.y, map_.origin.z);
-	Vec3i dim(map_.dim.x, map_.dim.y, map_.dim.z);
-	decimal_t res = map_.resolution;
-	std::vector<signed char> map = map_.data;
-	map_util->setMap(ori, dim, map, res);
-	voxel_map_frame = map_.header.frame_id;
-	if (!map_initialized_){
-		map_initialized_ = true;
-		ROS_INFO("Map initialized!");
-	}
-	else ROS_INFO("Map updated");
-	checkMap();
+  std::unique_ptr<JPSPlanner3D> planner_ptr_;
+  std::unique_ptr<DMPlanner3D> dmplanner_ptr_;
+
+  //mutex for changes of variables
+  boost::mutex map_mutex_, odom_mutex_;
+};
+
+Plan3DToPath::Plan3DToPath()
+{
+  pnh_ = ros::NodeHandle("~");
+
+  pnh_.param("yaml_map", yaml_map_, false);
+  pnh_.param<std::string>("yaml_file", yaml_file_, "map.yaml");
+
+  //~ We do planning in the frame of the yaml file or VoxelMap (not octomap)
+  //~ For the yaml case, there are 3 frames, world (gazebo), map (octomap), and yaml (written map file, has to be shifted if the octomap has any negative values)
+  //~ There is also a base_link for the robot local frame, but it is not needed by the planning (we use the ground_truth/odom topic in the world frame)
+  //~ For the VoxelMap taken in by subscription case, there is the world (gazebo) and the map (local frame to the robot created by e.g. SLAM)
+  pnh_.param<std::string>("planning_frame", planning_frame_, "map");
+  pnh_.param<std::string>("world_frame", world_frame_, "/world");
+  pnh_.param<std::string>("mapper_frame", mapper_frame_, "map");
+
+  map_initialized_ = false;
+
+  if(yaml_map_)
+  {
+    ROS_WARN("Using yaml map %s", yaml_file_.c_str());
+    readMap(yaml_file_);
+    publishMap();
+  }
+
+  map_util_ = std::make_shared<VoxelMapUtil>();
+
+  //#TODO Setup planners, map_utils_ needs to be initialized, maybe init with empty?
+  //setUpJPS();
+  //setUpDMP();
+
+  path_pub_ = nh_.advertise<nav_msgs::Path>("jps_path", 1);
+  dmp_path_pub_ = nh_.advertise<nav_msgs::Path>("dmp_path", 1);
+  map_marker_pub_ = nh_.advertise<visualization_msgs::Marker>("map_check", 1);
+
+  if(!yaml_map_)
+    map_sub_ = nh_.subscribe<pluto_msgs::VoxelMap>("rb_to_voxel_map", 1, boost::bind(&Plan3DToPath::mapCallback, this, _1));
+
+  odom_sub_ = nh_.subscribe<nav_msgs::Odometry>("odom", 1, boost::bind(&Plan3DToPath::odomCallback, this, _1));
+  waypoints_sub_ = nh_.subscribe<nav_msgs::Path>("waypoints", 2, boost::bind(&Plan3DToPath::waypointsCallback,  this, _1));
 
 }
 
-void readMap(char* map){
+void Plan3DToPath::setUpJPS()
+{
+  planner_ptr_.reset(new JPSPlanner3D(true)); // Declare a planner
+  planner_ptr_->setMapUtil(map_util_); // Set collision checking function
+  planner_ptr_->updateMap();
+}
+
+void Plan3DToPath::setUpDMP()
+{
+  dmplanner_ptr_.reset(new DMPlanner3D(true)); // Declare a planner
+  dmplanner_ptr_->setMap(map_util_,Vec3f(0.0, 0.0, 0.0)); // Set collision checking function
+  //~ dmplanner_ptr->updateMap();
+  dmplanner_ptr_->setPotentialRadius(Vec3f(2.5, 2.5, 2.5)); // Set 3D potential field radius
+  dmplanner_ptr_->setSearchRadius(Vec3f(1.5, 1.5, 1.5)); // Set the valid search region around given path
+}
+
+void Plan3DToPath::readMap(std::string map_file)
+{
   // Read the map from yaml
   ROS_INFO("reading map (takes a few seconds)");
-  MapReader<Vec3i, Vec3f> reader(map, true); // Map read from a given file
-  if(!reader.exist()) {
-    printf(ANSI_COLOR_RED "Cannot read input file [%s]!\n" ANSI_COLOR_RESET, map);
+  MapReader<Vec3i, Vec3f> reader(map_file.c_str(), true);
+  if(!reader.exist())
+  {
+    ROS_ERROR("Cannot read input file [%s]!",map_file.c_str());
+    return;
   }
-  
-  // store map in map_util
-  //~ std::shared_ptr<VoxelMapUtil> map_util = std::make_shared<VoxelMapUtil>();
-  map_util->setMap(reader.origin(), reader.dim(), reader.data(), reader.resolution());
+
+  // store map in map_util_
+  map_util_->setMap(reader.origin(), reader.dim(), reader.data(), reader.resolution());
   map_initialized_ = true;
   ROS_INFO("Map initialized!");
-
 }
 
-	
-std::shared_ptr<JPSPlanner3D> setUpJPS(){
-  std::shared_ptr<JPSPlanner3D> planner_ptr(new JPSPlanner3D(true)); // Declare a planner
-  planner_ptr->setMapUtil(map_util); // Set collision checking function
-  planner_ptr->updateMap();
-  return planner_ptr;
+void Plan3DToPath::odomCallback(const nav_msgs::Odometry::ConstPtr& msg)
+{
+  boost::mutex::scoped_lock lock(odom_mutex_);
+  odom_ = *msg;
 }
 
-std::shared_ptr<DMPlanner3D> setUpDMP(){
-  std::shared_ptr<DMPlanner3D> dmplanner_ptr(new DMPlanner3D(true)); // Declare a planner
-  dmplanner_ptr->setMap(map_util,Vec3f(0.0, 0.0, 0.0)); // Set collision checking function
-  //~ dmplanner_ptr->updateMap();
-  dmplanner_ptr->setPotentialRadius(Vec3f(2.5, 2.5, 2.5)); // Set 3D potential field radius
-  dmplanner_ptr->setSearchRadius(Vec3f(1.5, 1.5, 1.5)); // Set the valid search region around given path
-  return dmplanner_ptr;
-}
+void Plan3DToPath::mapCallback(const pluto_msgs::VoxelMap::ConstPtr& msg)
+{
+  boost::mutex::scoped_lock lock(map_mutex_);
 
-nav_msgs::Path create_path(auto planner_path, tf::TransformListener &listener){
-  geometry_msgs::PoseStamped posestamp;
-  nav_msgs::Path path;
-  path.header.frame_id = gazebo_frame;
-  path.header.stamp = ros::Time();
-
-  for(const auto& it: planner_path){
-	posestamp.header.stamp = ros::Time();
-    posestamp.header.frame_id = planning_frame;
-	posestamp.pose.position.x = it.transpose()[0];
-	posestamp.pose.position.y = it.transpose()[1];
-	posestamp.pose.position.z = it.transpose()[2];
-	posestamp.pose.orientation.w = 1;
-	posestamp.pose.orientation.x = 0;
-	posestamp.pose.orientation.y = 0;
-	posestamp.pose.orientation.z = 0;
-	listener.transformPose(gazebo_frame,posestamp, posestamp);
-	// linear interpolation to add points to path for ewok to run better
-	if (path.poses.size()>0){
-		float diff_x = posestamp.pose.position.x - path.poses.back().pose.position.x;
-		float diff_y = posestamp.pose.position.y - path.poses.back().pose.position.y;
-		float diff_z = posestamp.pose.position.z - path.poses.back().pose.position.z;
-		int num_steps = int(sqrt(diff_x*diff_x+diff_y*diff_y+diff_z*diff_z)/0.5);
-		geometry_msgs::PoseStamped interm_pt = posestamp;
-		geometry_msgs::PoseStamped last_pt = path.poses.back();
-		for (int i = 1; i < num_steps; i++){
-			interm_pt.pose.position.x = diff_x*i/num_steps + last_pt.pose.position.x;
-			interm_pt.pose.position.y = diff_y*i/num_steps + last_pt.pose.position.y;
-			interm_pt.pose.position.z = diff_z*i/num_steps + last_pt.pose.position.z;
-			path.poses.push_back(interm_pt);
-		}
-	}
-	path.poses.push_back(posestamp);
+  pluto_msgs::VoxelMap vo_map = *msg;
+  Vec3f ori(vo_map.origin.x, vo_map.origin.y, vo_map.origin.z);
+  Vec3i dim(vo_map.dim.x, vo_map.dim.y, vo_map.dim.z);
+  decimal_t res = vo_map.resolution;
+  std::vector<signed char> map = vo_map.data;
+  map_util_->setMap(ori, dim, map, res);
+  std::string voxel_map_frame = vo_map.header.frame_id;
+  if (!map_initialized_)
+  {
+    map_initialized_ = true;
+    ROS_INFO("Map initialized! frame %s", voxel_map_frame.c_str());
   }
-  return path;  	
-
+  publishMap();
 }
 
-std::vector<nav_msgs::Path> do_planning(const std::shared_ptr<JPSPlanner3D> &planner_ptr , const std::shared_ptr<DMPlanner3D> &dmplanner_ptr){
+void Plan3DToPath::waypointsCallback(const nav_msgs::Path::ConstPtr& msg)
+{
+  geometry_msgs::PoseStamped ps_start, ps_goal;
+  int wp_size = msg->poses.size();
+
+  ROS_INFO("%d waypoints received", wp_size);
+  if(wp_size > 2)
+    ROS_WARN("First 2 waypoints treated as start, goal. have not yet implemented handling additional points");
+  if(wp_size < 1)
+  {
+    ROS_ERROR("Must publish at least one waypoint");
+    return;
+  }
+  if(wp_size == 1)
+  {
+    boost::mutex::scoped_lock lock(odom_mutex_);
+    ps_start.pose = odom_.pose.pose;
+    ps_start.header.frame_id = odom_.header.frame_id;
+    ps_goal = msg->poses[0];
+    ps_goal.header.frame_id = msg->header.frame_id;
+    ROS_INFO("%f %f %f %s",ps_start.pose.position.x,ps_start.pose.position.y,ps_start.pose.position.z, ps_start.header.frame_id.c_str());
+  }
+  else
+  {
+    ps_start = msg->poses[0];
+    ps_start.header.frame_id = msg->header.frame_id;
+    ps_goal = msg->poses[1];
+    ps_goal.header.frame_id = msg->header.frame_id;
+  }
 
   std::vector<nav_msgs::Path> paths;
-    
-  if (ps_goal.pose.position.x == ps_start.pose.position.x && ps_goal.pose.position.y == ps_start.pose.position.y && ps_goal.pose.position.z == ps_start.pose.position.z){
-	   ROS_ERROR("start and goal poses are the same. Have you published waypoints?");
-	   return paths;
-   }
-   else ROS_INFO("running planner");
 
-  tf::StampedTransform transform;
-  tf::TransformListener listener;
+  boost::mutex::scoped_lock lock(map_mutex_);
+  {
 
+  if (!map_initialized_)
+    ROS_ERROR("No map initialized");
 
-  try{
-	listener.waitForTransform(mapper_frame, planning_frame, ros::Time(0), ros::Duration(1));
-	listener.waitForTransform(gazebo_frame, planning_frame, ros::Time(0), ros::Duration(1));
-	listener.transformPose(planning_frame,ros::Time(0),ps_start,ps_start.header.frame_id, ps_start);
-	listener.transformPose(planning_frame,ros::Time(0),ps_goal,ps_goal.header.frame_id, ps_goal);
-   }
-   catch (tf::TransformException ex){
-      ROS_ERROR("%s",ex.what());
-      ros::Duration(1.0).sleep();
-	 return paths;
-   }
+  //#TODO does the planner needs to be reset everytime?
+  setUpJPS();
+  setUpDMP();
 
-	const Vec3f start(ps_start.pose.position.x,ps_start.pose.position.y,ps_start.pose.position.z);
-	const Vec3f goal(ps_goal.pose.position.x,ps_goal.pose.position.y,ps_goal.pose.position.z);
-
-  // Run JPS Planner
-  planner_ptr->plan(start, goal, 1, true); // Plan from start to goal using JPS
-  auto path_jps = planner_ptr->getRawPath();
-  paths.push_back(create_path(path_jps,listener));
-
-  // Run DMP planner
-  dmplanner_ptr->computePath(start, goal, path_jps); // Compute the path given the jps path
-  const auto path_dmp = dmplanner_ptr->getPath();
-  paths.push_back(create_path(path_dmp,listener));
-  
-  if (!paths.empty()){
-	  path_pub.publish(paths[0]);
-	  dmp_path_pub.publish(paths[1]);
+  do_planning(ps_start, ps_goal, paths);
   }
-  return paths;
-  
 }
 
+void Plan3DToPath::publishMap()
+{
+  const Vec3i dim = map_util_->getDim();
+  //~ const Vec3f origin = map_util_->getOrigin();
+  const double res = map_util_->getRes();
+  visualization_msgs::Marker marker;
+  marker.header.frame_id = planning_frame_;
+  marker.header.stamp = ros::Time();
+  marker.type = visualization_msgs::Marker::CUBE_LIST;
+  marker.scale.x = res;
+  marker.scale.y = res;
+  marker.scale.z = res;
+  marker.color.a = 1.0;
+  marker.color.r = 0.0;
+  marker.color.g = 1.0;
+  marker.color.b = 0.0;
+  for(int x = 0; x < dim(0); x ++) {
+    for(int y = 0; y < dim(1); y ++) {
+      for(int z = 0; z < dim(2); z ++) {
+        if(!map_util_->isFree(Vec3i(x, y,z))) {
+        Vec3f pt = map_util_->intToFloat(Vec3i(x, y,z));
+        geometry_msgs::Point point;
+        point.x = pt(0);
+        point.y = pt(1);
+        point.z = pt(2);
+        marker.points.push_back(point);
+  }}}}
 
-int main(int argc, char** argv) {
-    ros::init(argc, argv, "plan3d_to_path");
-    ros::NodeHandle nh("~");
-    path_pub = nh.advertise<nav_msgs::Path>("jps_path", 1);
-    dmp_path_pub = nh.advertise<nav_msgs::Path>("dmp_path", 1);
-    std::string waypoint_topic, voxel_topic;
-	ros::param::param<std::string>("waypoint_topic", waypoint_topic, "/waypoints");
-    ros::param::param<std::string>("voxel_topic", voxel_topic, "/rb_to_voxel_map");
+  map_marker_pub_.publish(marker);
+}
 
-	ros::Subscriber sub = nh.subscribe(waypoint_topic, 1000, waypointsCallback);
-	nh.param<std::string>("robot_name", robot_name, "ddk");
-	ros::Subscriber odom_sub = nh.subscribe("/" + robot_name + "/ground_truth/odom", 10, odomCallback);
-	ros::Subscriber map_sub = nh.subscribe(voxel_topic, 2, mapCallback);
-	map_util = std::make_shared<VoxelMapUtil>();
+void Plan3DToPath::create_path(vec_Vec3f planner_path, nav_msgs::Path& path)
+{
+  geometry_msgs::PoseStamped posestamp;
+  path.header.frame_id = world_frame_;
+  path.header.stamp = ros::Time();
 
-    marker_pub = nh.advertise<visualization_msgs::Marker>("map_check", 1);
-	
-	//~ We do planning in the frame of the yaml file or VoxelMap (not octomap)
-	//~ For the yaml case, there are 3 frames, world (gazebo), map (octomap), and yaml (written map file, has to be shifted if the octomap has any negative values)
-	//~ There is also a base_link for the robot local frame, but it is not needed by the planning (we use the ground_truth/odom topic in the world frame)
-	//~ For the VoxelMap taken in by subscription case, there is the world (gazebo) and the map (local frame to the robot created by e.g. SLAM)
+  for(const auto& it: planner_path)
+  {
+    posestamp.header.stamp = ros::Time();
+    posestamp.header.frame_id = planning_frame_;
+    posestamp.pose.position.x = it.transpose()[0];
+    posestamp.pose.position.y = it.transpose()[1];
+    posestamp.pose.position.z = it.transpose()[2];
+    posestamp.pose.orientation.w = 1;
+    posestamp.pose.orientation.x = 0;
+    posestamp.pose.orientation.y = 0;
+    posestamp.pose.orientation.z = 0;
+    listener_.transformPose(world_frame_,posestamp, posestamp);
+    // linear interpolation to add points to path for ewok to run better
+    if (path.poses.size() > 0)
+    {
+      float diff_x = posestamp.pose.position.x - path.poses.back().pose.position.x;
+      float diff_y = posestamp.pose.position.y - path.poses.back().pose.position.y;
+      float diff_z = posestamp.pose.position.z - path.poses.back().pose.position.z;
+      int num_steps = int(sqrt(diff_x*diff_x+diff_y*diff_y+diff_z*diff_z)/0.5);
+      geometry_msgs::PoseStamped interm_pt = posestamp;
+      geometry_msgs::PoseStamped last_pt = path.poses.back();
+      for (int i = 1; i < num_steps; i++)
+      {
+        interm_pt.pose.position.x = diff_x*i/num_steps + last_pt.pose.position.x;
+        interm_pt.pose.position.y = diff_y*i/num_steps + last_pt.pose.position.y;
+        interm_pt.pose.position.z = diff_z*i/num_steps + last_pt.pose.position.z;
+        path.poses.push_back(interm_pt);
+      }
+    }
+    path.poses.push_back(posestamp);
+  }
+}
 
-    nh.param<std::string>("gazebo_frame", gazebo_frame, "world");
-    nh.param<std::string>("mapper_frame", mapper_frame, "map");
-	if(argc == 2) {
-		ROS_INFO("Using yaml map");
-		readMap(argv[1]);
-		yaml_map = true;
-	}
+void Plan3DToPath::do_planning(geometry_msgs::PoseStamped& ps_start, geometry_msgs::PoseStamped& ps_goal, std::vector<nav_msgs::Path>& paths)
+{
+  /*
+  if (ps_goal.pose.position.x == ps_start.pose.position.x && ps_goal.pose.position.y == ps_start.pose.position.y && ps_goal.pose.position.z == ps_start.pose.position.z)
+  {
+    ROS_ERROR("Start and goal poses are the same. Have you published waypoints?");
+    return;
+  }*/
+  ROS_INFO("Running planner");
 
-    while(ros::ok() && !map_initialized_) {
-		ROS_WARN_ONCE("Map not initialized! Waiting for map on topic %s", voxel_topic.c_str());
-		ros::Duration(0.5).sleep();
-		ros::spinOnce();
-	}
-	
-	if (yaml_map) planning_frame = "yaml";
-	//~ else planning_frame = mapper_frame;
-	else planning_frame = voxel_map_frame;
+  tf::StampedTransform transform;
 
-	std::shared_ptr<JPSPlanner3D> planner_ptr = setUpJPS();
-	std::shared_ptr<DMPlanner3D> dmplanner_ptr = setUpDMP();
-	std::vector<nav_msgs::Path> paths;
-	replan_flag = false;
-	checkMap();
-	while (ros::ok()){
-		  ros::spinOnce();
-		  if (replan_flag){
-			dmplanner_ptr = setUpDMP();
-			paths = do_planning(planner_ptr, dmplanner_ptr);
-			replan_flag = false;
-		  }
-		  //~ if (!paths.empty()){
-			  //~ path_pub.publish(paths[0]);
-			  //~ dmp_path_pub.publish(paths[1]);
-		  //~ }
-		  ros::Duration(1).sleep();
-	}
-    return 0;
+  try
+  {
+    //listener_.waitForTransform(mapper_frame_, planning_frame_, ros::Time(0), ros::Duration(1));
+    listener_.waitForTransform(world_frame_, planning_frame_, ros::Time(0), ros::Duration(1));
+    listener_.transformPose(planning_frame_,ros::Time(0),ps_start,ps_start.header.frame_id, ps_start);
+    listener_.transformPose(planning_frame_,ros::Time(0),ps_goal,ps_goal.header.frame_id, ps_goal);
+  }
+  catch (tf::TransformException ex)
+  {
+    ROS_ERROR("%s",ex.what());
+    return;
+  }
+
+  const Vec3f start(ps_start.pose.position.x,ps_start.pose.position.y,ps_start.pose.position.z);
+  const Vec3f goal(ps_goal.pose.position.x,ps_goal.pose.position.y,ps_goal.pose.position.z);
+
+  // Run JPS Planner
+  planner_ptr_->plan(start, goal, 1, true); // Plan from start to goal using JPS
+  auto path_jps = planner_ptr_->getRawPath();
+  nav_msgs::Path nav_path_jps;
+  create_path(path_jps, nav_path_jps);
+  paths.push_back(nav_path_jps);
+
+  // Run DMP planner
+  dmplanner_ptr_->computePath(start, goal, path_jps); // Compute the path given the jps path
+  auto path_dmp = dmplanner_ptr_->getPath();
+  nav_msgs::Path nav_path_dmp;
+  create_path(path_dmp, nav_path_dmp);
+  paths.push_back(nav_path_dmp);
+
+  if (!paths.empty())
+  {
+    path_pub_.publish(paths[0]);
+    dmp_path_pub_.publish(paths[1]);
+  }
+}
+
+int main(int argc, char** argv)
+{
+  ros::init(argc, argv, "plan3d_to_path");
+
+  Plan3DToPath p3dp;
+
+  ros::Rate loop_rate(1);
+
+  while (ros::ok())
+  {
+    ros::spinOnce();
+    loop_rate.sleep();
+  }
+  return 0;
 }
