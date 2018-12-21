@@ -8,6 +8,7 @@
 #include <geometry_msgs/PoseStamped.h>
 #include <ros/ros.h>
 #include <tf/transform_listener.h>
+#include <tf_conversions/tf_eigen.h>
 #include <tf/tf.h>
 #include <visualization_msgs/Marker.h>
 #include <nav_msgs/Odometry.h>
@@ -29,7 +30,7 @@ private:
   void readMap(std::string map_file);
   void publishMap();
   void do_planning(geometry_msgs::PoseStamped& ps_start, geometry_msgs::PoseStamped& ps_goal, std::vector<nav_msgs::Path>& paths);
-  void create_path(vec_Vec3f planner_path, nav_msgs::Path& path);
+  void create_path(vec_Vec3f planner_path, nav_msgs::Path& path, const tf::StampedTransform& transform, const ros::Time current_time);
 
   ros::NodeHandle nh_, pnh_;
 
@@ -229,24 +230,40 @@ void Plan3DToPath::publishMap()
   map_marker_pub_.publish(marker);
 }
 
-void Plan3DToPath::create_path(vec_Vec3f planner_path, nav_msgs::Path& path)
+void Plan3DToPath::create_path(vec_Vec3f planner_path, nav_msgs::Path& path, const tf::StampedTransform& transform_p_to_w, const ros::Time current_time)
 {
   geometry_msgs::PoseStamped posestamp;
   path.header.frame_id = world_frame_;
-  path.header.stamp = ros::Time();
+  path.header.stamp = current_time;
+
+  Eigen::Affine3d dT_p_w;
+  tf::transformTFToEigen(transform_p_to_w, dT_p_w);
+  Eigen::Affine3f T_p_w = dT_p_w.cast<float>();
 
   for(const auto& it: planner_path)
   {
-    posestamp.header.stamp = ros::Time();
+    posestamp.header.stamp = current_time;
     posestamp.header.frame_id = planning_frame_;
-    posestamp.pose.position.x = it.transpose()[0];
-    posestamp.pose.position.y = it.transpose()[1];
-    posestamp.pose.position.z = it.transpose()[2];
     posestamp.pose.orientation.w = 1;
     posestamp.pose.orientation.x = 0;
     posestamp.pose.orientation.y = 0;
     posestamp.pose.orientation.z = 0;
-    listener_.transformPose(world_frame_,posestamp, posestamp);
+
+    Eigen::Vector4f p;
+    p[0] = it.transpose()[0];
+    p[1] = it.transpose()[1];
+    p[2] = it.transpose()[2];
+    p[3] = 1;
+    p = T_p_w * p;
+    posestamp.pose.position.x = p[0];
+    posestamp.pose.position.y = p[1];
+    posestamp.pose.position.z = p[2];
+
+    //posestamp.pose.position.x = it.transpose()[0];
+    //posestamp.pose.position.y = it.transpose()[1];
+    //posestamp.pose.position.z = it.transpose()[2];
+    //listener_.transformPose(world_frame_,posestamp, posestamp);
+
     // linear interpolation to add points to path for ewok to run better
     if (path.poses.size() > 0)
     {
@@ -278,14 +295,15 @@ void Plan3DToPath::do_planning(geometry_msgs::PoseStamped& ps_start, geometry_ms
   }*/
   ROS_INFO("Running planner");
 
-  tf::StampedTransform transform;
-
+  tf::StampedTransform transform_p_to_w;
+  ros::Time current_time = ros::Time::now();
   try
   {
     //listener_.waitForTransform(mapper_frame_, planning_frame_, ros::Time(0), ros::Duration(1));
-    listener_.waitForTransform(world_frame_, planning_frame_, ros::Time(0), ros::Duration(1));
-    listener_.transformPose(planning_frame_,ros::Time(0),ps_start,ps_start.header.frame_id, ps_start);
-    listener_.transformPose(planning_frame_,ros::Time(0),ps_goal,ps_goal.header.frame_id, ps_goal);
+    listener_.waitForTransform(world_frame_, planning_frame_, current_time, ros::Duration(0.5));
+    listener_.lookupTransform(world_frame_, planning_frame_, current_time, transform_p_to_w);
+    listener_.transformPose(planning_frame_, current_time, ps_start, ps_start.header.frame_id, ps_start);
+    listener_.transformPose(planning_frame_, current_time, ps_goal, ps_goal.header.frame_id, ps_goal);
   }
   catch (tf::TransformException ex)
   {
@@ -300,14 +318,14 @@ void Plan3DToPath::do_planning(geometry_msgs::PoseStamped& ps_start, geometry_ms
   planner_ptr_->plan(start, goal, 1, true); // Plan from start to goal using JPS
   auto path_jps = planner_ptr_->getRawPath();
   nav_msgs::Path nav_path_jps;
-  create_path(path_jps, nav_path_jps);
+  create_path(path_jps, nav_path_jps, transform_p_to_w, current_time);
   paths.push_back(nav_path_jps);
 
   // Run DMP planner
   dmplanner_ptr_->computePath(start, goal, path_jps); // Compute the path given the jps path
   auto path_dmp = dmplanner_ptr_->getPath();
   nav_msgs::Path nav_path_dmp;
-  create_path(path_dmp, nav_path_dmp);
+  create_path(path_dmp, nav_path_dmp, transform_p_to_w, current_time);
   paths.push_back(nav_path_dmp);
 
   if (!paths.empty())
