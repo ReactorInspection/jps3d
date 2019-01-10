@@ -44,7 +44,7 @@ private:
   bool map_initialized_;
   bool yaml_map_;
   std::string yaml_file_;
-  std::string world_frame_, planning_frame_, mapper_frame_;
+  std::string world_frame_, planning_frame_;
 
   std::unique_ptr<JPSPlanner3D> planner_ptr_;
   std::unique_ptr<DMPlanner3D> dmplanner_ptr_;
@@ -64,9 +64,7 @@ Plan3DToPath::Plan3DToPath()
   //~ For the yaml case, there are 3 frames, world (gazebo), map (octomap), and yaml (written map file, has to be shifted if the octomap has any negative values)
   //~ There is also a base_link for the robot local frame, but it is not needed by the planning (we use the ground_truth/odom topic in the world frame)
   //~ For the VoxelMap taken in by subscription case, there is the world (gazebo) and the map (local frame to the robot created by e.g. SLAM)
-  pnh_.param<std::string>("planning_frame", planning_frame_, "map");
   pnh_.param<std::string>("world_frame", world_frame_, "/world");
-  pnh_.param<std::string>("mapper_frame", mapper_frame_, "map");
 
   map_initialized_ = false;
 
@@ -124,6 +122,7 @@ void Plan3DToPath::readMap(std::string map_file)
 
   // store map in map_util_
   map_util_->setMap(reader.origin(), reader.dim(), reader.data(), reader.resolution());
+  planning_frame_ = "yaml";
   map_initialized_ = true;
   ROS_INFO("Map initialized!");
 }
@@ -144,11 +143,11 @@ void Plan3DToPath::mapCallback(const pluto_msgs::VoxelMap::ConstPtr& msg)
   decimal_t res = vo_map.resolution;
   std::vector<signed char> map = vo_map.data;
   map_util_->setMap(ori, dim, map, res);
-  std::string voxel_map_frame = vo_map.header.frame_id;
+  planning_frame_ = vo_map.header.frame_id;
   if (!map_initialized_)
   {
     map_initialized_ = true;
-    ROS_INFO("Map initialized! frame %s", voxel_map_frame.c_str());
+    ROS_INFO("Map initialized! frame %s", planning_frame_.c_str());
   }
   publishMap();
 }
@@ -299,7 +298,6 @@ void Plan3DToPath::do_planning(geometry_msgs::PoseStamped& ps_start, geometry_ms
   ros::Time current_time = ros::Time::now();
   try
   {
-    //listener_.waitForTransform(mapper_frame_, planning_frame_, ros::Time(0), ros::Duration(1));
     listener_.waitForTransform(world_frame_, planning_frame_, current_time, ros::Duration(0.5));
     listener_.lookupTransform(world_frame_, planning_frame_, current_time, transform_p_to_w);
     listener_.transformPose(planning_frame_, current_time, ps_start, ps_start.header.frame_id, ps_start);
