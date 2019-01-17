@@ -59,6 +59,10 @@ Plan3DToPath::Plan3DToPath()
 
   pnh_.param("yaml_map", yaml_map_, false);
   pnh_.param<std::string>("yaml_file", yaml_file_, "map.yaml");
+  
+  path_pub_ = nh_.advertise<nav_msgs::Path>("jps_path", 1);
+  dmp_path_pub_ = nh_.advertise<nav_msgs::Path>("dmp_path", 1);
+  map_marker_pub_ = nh_.advertise<visualization_msgs::Marker>("map_check", 1);
 
   //~ We do planning in the frame of the yaml file or VoxelMap (not octomap)
   //~ For the yaml case, there are 3 frames, world (gazebo), map (octomap), and yaml (written map file, has to be shifted if the octomap has any negative values)
@@ -67,23 +71,19 @@ Plan3DToPath::Plan3DToPath()
   pnh_.param<std::string>("world_frame", world_frame_, "/world");
 
   map_initialized_ = false;
+  map_util_ = std::make_shared<VoxelMapUtil>();
+
 
   if(yaml_map_)
   {
     ROS_WARN("Using yaml map %s", yaml_file_.c_str());
+    ros::Duration(1).sleep(); // delay so that map publisher has enough time to connect to the subscribers
     readMap(yaml_file_);
-    publishMap();
   }
-
-  map_util_ = std::make_shared<VoxelMapUtil>();
 
   //#TODO Setup planners, map_utils_ needs to be initialized, maybe init with empty?
   //setUpJPS();
   //setUpDMP();
-
-  path_pub_ = nh_.advertise<nav_msgs::Path>("jps_path", 1);
-  dmp_path_pub_ = nh_.advertise<nav_msgs::Path>("dmp_path", 1);
-  map_marker_pub_ = nh_.advertise<visualization_msgs::Marker>("map_check", 1);
 
   if(!yaml_map_)
     map_sub_ = nh_.subscribe<pluto_msgs::VoxelMap>("rb_to_voxel_map", 1, boost::bind(&Plan3DToPath::mapCallback, this, _1));
@@ -125,6 +125,8 @@ void Plan3DToPath::readMap(std::string map_file)
   planning_frame_ = "yaml";
   map_initialized_ = true;
   ROS_INFO("Map initialized!");
+  publishMap();
+
 }
 
 void Plan3DToPath::odomCallback(const nav_msgs::Odometry::ConstPtr& msg)
@@ -225,7 +227,6 @@ void Plan3DToPath::publishMap()
         point.z = pt(2);
         marker.points.push_back(point);
   }}}}
-
   map_marker_pub_.publish(marker);
 }
 
