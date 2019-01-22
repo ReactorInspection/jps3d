@@ -20,7 +20,13 @@ ELSE()
   MESSAGE(FATAL_ERROR "Could not find yaml-cpp.")
 ENDIF()
 
-catkin_package()
+## DEPENDS: system dependencies of this project that dependent projects also need
+catkin_package(
+  INCLUDE_DIRS include
+  LIBRARIES jps_lib dmp_lib
+#  CATKIN_DEPENDS jps3d
+#  DEPENDS system_lib
+)
 
 INCLUDE_DIRECTORIES(include ${EIGEN3_INCLUDE_DIR})
 include_directories(${catkin_INCLUDE_DIRS})
